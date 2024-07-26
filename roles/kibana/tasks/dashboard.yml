@@ -1,0 +1,58 @@
+- name: get all index-pattern ids from space {{ item.id }}
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/s/{{ item.id }}/api/kibana/management/saved_objects/_find?type=index-pattern&perPage=1000
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+    method: GET
+    headers:
+      'kbn-xsrf': kibana
+    status_code: 200
+    body_format: json
+    return_content: yes
+  register: index_patterns
+  check_mode: no
+
+- name: unset pattern-id
+  set_fact:
+    pattern_id: ""
+
+- name: get logstash-{{ item.id }}-* index-pattern id from space {{ item.id }}
+  set_fact:
+    pattern_id: "{{ saved_object.id }}"
+  when: saved_object.meta.title == 'logstash-' + item.id + '-*'
+  with_items: "{{ index_patterns.json.saved_objects }}"
+  loop_control:
+    loop_var: saved_object
+
+- name: copy dashboard {{ item.dashboard }} to space {{ item.id }}
+  copy:
+    src: credentials/{{ elasticsearch_cluster_name }}/dashboards/{{ item.dashboard }}.ndjson
+    dest: /etc/kibana/dashboards/{{ item.dashboard }}-{{ item.id }}.ndjson
+    mode: 0640
+    owner: kibana
+
+- name: replace index-pattern id in {{ item.dashboard }} for space {{ item.id }}
+  replace:
+    path: /etc/kibana/dashboards/{{ item.dashboard }}-{{ item.id }}.ndjson
+    regexp: "index_pattern_to_replace"
+    replace: '{{ pattern_id }}'
+  when: (pattern_id is defined) and (pattern_id is regex("^[a-f0-9\-]+$"))
+
+- name: replace title in {{ item.dashboard }} for space {{ item.id }}
+  replace:
+    path: /etc/kibana/dashboards/{{ item.dashboard }}-{{ item.id }}.ndjson
+    regexp: "{{ item.dashboard }}"
+    replace: "{{ item.dashboard }} {{ item.id }}"
+  when: (pattern_id is defined) and (pattern_id is regex("^[a-f0-9\-]+$"))
+
+- name: overwrite {{ item.dashboard }} dashboard to space {{ item.id }}
+  shell: 'curl -X "POST" "http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/s/{{ item.id }}/api/saved_objects/_import?overwrite=true" \
+               -s -H "kbn-xsrf: kibana" \
+               -u "elastic:{{ lookup(''file'', ''credentials/'' + elasticsearch_cluster_name + ''/elastic.passwd'') }}" \
+               --form "file=@/etc/kibana/dashboards/{{ item.dashboard }}-{{ item.id }}.ndjson" \
+               | grep ''"success":true'''
+  args:
+    warn: no
+  when: (pattern_id is defined) and (pattern_id is regex("^[a-f0-9\-]+$"))
+

@@ -1,0 +1,27 @@
+---
+
+- hosts: all
+
+- hosts: elasticsearch
+  roles:
+    - name: elasticsearch
+      tags:
+        - elasticsearch
+
+- hosts: kibana
+  roles:
+    - name: kibana
+      tags: 
+        - kibana
+
+- hosts: logstash
+  roles:
+    - name: logstash
+      tags:
+        - logstash
+
+- hosts: filebeat
+  roles:
+    - name: filebeat
+      tags: filebeat
+

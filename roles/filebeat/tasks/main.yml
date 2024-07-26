@@ -1,0 +1,26 @@
+---
+
+- name: GPG Install
+  apt:
+    update_cache: yes
+    pkg:
+     - gpg
+     - gpg-agent
+
+- name: Elastic key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Elastic repo
+  apt_repository:
+    repo: deb https://artifacts.elastic.co/packages/{% if filebeat_oss %}oss-{% endif %}{{ filebeat_version.split('.')[0] }}.x/apt stable main
+    state: present
+    filename: elastic
+
+- name: packages
+  apt:
+    update_cache: yes
+    pkg:
+      # There is no filebeat-oss package, juste filebeat
+      - filebeat={{ filebeat_version }}

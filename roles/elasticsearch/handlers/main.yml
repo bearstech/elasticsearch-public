@@ -1,0 +1,21 @@
+---
+
+- name: restart elasticsearch
+  service:
+    name: elasticsearch
+    state: restarted
+
+- name: restart cerebro
+  service:
+    name: cerebro
+    state: restarted
+
+- name: reload telegraf
+  service:
+    name: telegraf
+    state: reloaded
+
+- name: reload nginx
+  service:
+    name: nginx
+    state: reloaded

@@ -1,0 +1,21 @@
+[[inputs.kibana]]
+  ## specify a list of one or more Kibana servers
+  servers = ["http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601"]
+
+  ## Timeout for HTTP requests
+  timeout = "5s"
+
+  ## HTTP Basic Auth credentials
+  # username = "username"
+  # password = "pa$$word"
+{% if elasticsearch_auth %}
+  username = "remote_monitoring_user"
+  password = "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/remote_monitoring_user.passwd') }}"
+{% endif %}
+
+  ## Optional TLS Config
+  # tls_ca = "/etc/telegraf/ca.pem"
+  # tls_cert = "/etc/telegraf/cert.pem"
+  # tls_key = "/etc/telegraf/key.pem"
+  ## Use TLS but skip chain & host verification
+  # insecure_skip_verify = false

@@ -1,0 +1,80 @@
+---
+
+- name: acme certif stat
+  stat: path={{ ssl_path.strip() }}
+  register: acme_stat
+
+- name: acme display ssl_path
+  debug:
+    var: ssl_path
+
+- name: acme display acme_stat
+  debug:
+    var: acme_stat
+
+- block:
+    - name: acme some package
+      apt:
+        pkg :
+          - acmesh
+        state : present
+
+    - name: acme domain
+      set_fact:
+          acme_domain: "{{ ssl_path.split('/')[3] }}"
+
+    - name: acme virtualhost already exists
+      register: already_vhost
+      ignore_errors: yes
+      shell: >
+          grep --perl-regexp
+          --regexp='server_name\s+{{ acme_domain.replace('.', '\.') }}\s*;'
+          --files-with-matches
+          /etc/nginx/sites-enabled/*
+
+    - name: acme assert that vhost search doesn t crash
+      assert:
+        that: already_vhost.rc in [0, 1]
+      when: not ansible_check_mode
+
+    - name: acme remove vhosts
+      file: state=absent
+            path={{ item }}
+      with_items: "{{ already_vhost.stdout_lines }}"
+      when: not ansible_check_mode
+
+    - name: acme dumb nginx vhost
+      copy:
+        dest: "/etc/nginx/sites-enabled/{{ acme_domain }}.acme"
+        content: |
+          server {
+            server_name {{ acme_domain }};
+            listen 80;
+            listen [::]:80;
+            location ^~ /.well-known/acme-challenge/ {
+              root         /var/run/acme/acme-challenge;
+            }
+          }
+
+    - name: acme reload nginx
+      service: name=nginx state=reloaded
+      when: not ansible_check_mode # and already_vhost.stdout_lines
+
+    - name: acme certificate
+      command: >
+        acme.sh --issue
+        -d {{ acme_domain }}
+        -w /var/run/acme/acme-challenge/
+        --reloadcmd "service nginx reload"
+      register: acme_cmd
+      failed_when: acme_cmd.rc != 0 and acme_cmd.rc != 2
+
+    - name: acme remove dumb vhost
+      file: state=absent
+            path="/etc/nginx/sites-enabled/{{ acme_domain }}.acme"
+
+    - name: acme reload nginx
+      service: name=nginx state=reloaded
+
+  when: ssl_path.startswith('/etc/acme/') and not acme_stat.stat.exists
+  tags: acme

@@ -1,0 +1,99 @@
+---
+
+- name: wait for elasticsearch
+  wait_for:
+    host: "{{ hostvars[groups.elasticsearch.0].ansible_facts[elasticsearch_iface].ipv4.address }}"
+    port: 9200
+    timeout: 60
+
+- name: Set .logstash-management template
+  uri:
+    url: "{{ _es }}/_template/.logstash-management"
+    method: PUT
+    body_format: json
+    status_code: 200
+    body: >
+      {
+        "order" : 0,
+        "index_patterns" : [
+          ".logstash"
+        ],
+        "settings" : {
+          "index" : {
+            "number_of_shards" : "1",
+            "number_of_replicas": {% if groups.elasticsearch | length == 1 %}0{% else %}{{ elasticsearch_replicas }}{% endif %},
+            "auto_expand_replicas" : "{% if groups.elasticsearch | length == 1 %}false{% else %}0-{{ elasticsearch_replicas }}{% endif %}",
+            "codec" : "best_compression"
+          }
+        },
+        "mappings" : {
+          "_meta" : {
+            "logstash-version" : "{{ logstash_version }}"
+          },
+          "dynamic" : "strict",
+          "properties" : {
+            "description" : {
+              "type" : "text"
+            },
+            "last_modified" : {
+              "type" : "date"
+            },
+            "pipeline_metadata" : {
+              "properties" : {
+                "version" : {
+                  "type" : "short"
+                },
+                "type" : {
+                  "type" : "keyword"
+                }
+              }
+            },
+            "pipeline" : {
+              "type" : "text"
+            },
+            "pipeline_settings" : {
+              "dynamic" : false,
+              "type" : "object"
+            },
+            "username" : {
+              "type" : "keyword"
+            },
+            "metadata" : {
+              "type" : "object",
+              "dynamic" : false
+            }
+          }
+        },
+        "aliases" : { }
+      }
+
+- name: logstash current template
+  uri:
+    url: "{{ _es }}/_template/logstash"
+    status_code:
+      - 200
+      - 404
+  register: logstash_current_template
+
+- block:
+  - name: patch the config
+    shell: >
+      jq --sort-keys
+      --indent 2
+      --monochrome-output
+      --raw-output
+      '
+      .settings.index.number_of_replicas = "{% if groups.elasticsearch | length == 1 %}0{% else %}{{ elasticsearch_replicas }}{% endif %}"
+      '
+    args:
+      stdin: "{{ logstash_current_template.json.logstash | to_json }}"
+    changed_when: no
+    register: patched_logstash_current_template
+
+  - name: Set logstash template
+    uri:
+      url: "{{ _es }}/_template/logstash"
+      method: PUT
+      body_format: json
+      body: "{{ patched_logstash_current_template.stdout | from_json }}"
+  when: logstash_current_template.status == 200

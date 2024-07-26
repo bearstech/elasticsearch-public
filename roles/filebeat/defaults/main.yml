@@ -1,0 +1,5 @@
+---
+
+filebeat_oss: false
+filebeat_version: 7.16.1
+

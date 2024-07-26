@@ -1,0 +1,12 @@
+---
+
+kibana_oss: false
+kibana_version: 7.16.1
+kibana_iface: lo
+kibana_locale: fr
+kibana_with_nginx: true
+kibana_spaces: []
+kibana_xpack_disabled: []
+kibana_email: admin@example.com
+elasticsearch_iface: lo
+elasticsearch_auth: false

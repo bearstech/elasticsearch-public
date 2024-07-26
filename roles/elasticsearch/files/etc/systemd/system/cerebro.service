@@ -1,0 +1,27 @@
+[Unit]
+Description=Cerebro
+Documentation=https://github.com/lmenezes/cerebro
+After=network-online.target
+
+[Service]
+User=cerebro
+
+PermissionsStartOnly=true
+ExecStartPre=/bin/mkdir -p /var/run/cerebro
+ExecStartPre=/bin/chmod 700 /var/run/cerebro
+ExecStartPre=/bin/chown cerebro /var/run/cerebro
+ExecStart= /opt/cerebro/bin/cerebro -Dhttp.port=${CEREBRO_PORT} -Dhttp.address=${CEREBRO_LISTEN} -Dconfig.file=/etc/cerebro/cerebro.conf
+ExecStopPost= /bin/rm -rf /var/run/cerebro
+EnvironmentFile=/etc/default/cerebro
+
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+Nice=10
+CPUAccounting=true
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+

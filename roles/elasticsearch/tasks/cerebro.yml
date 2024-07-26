@@ -1,0 +1,119 @@
+---
+
+- name: cerebro user
+  user:
+    name: cerebro
+    state: present
+    system: yes
+    createhome: no
+  tags: cerebro
+
+- name: cerebro versionned binary
+  tags: cerebro
+  args:
+    creates: /opt/cerebro-{{ cerebro_version }}
+    chdir: /opt
+  shell: >
+    wget -O- https://github.com/lmenezes/cerebro/releases/download/v{{cerebro_version}}/cerebro-{{cerebro_version}}.tgz | tar -xvz
+
+- name: cerebro main binary
+  file:
+    state: link
+    src: /opt/cerebro-{{ cerebro_version }}
+    dest: /opt/cerebro
+  notify: restart cerebro
+  tags: cerebro
+
+- name: cerebro folders
+  file:
+    state: directory
+    owner: cerebro
+    mode: 0700
+    path: "{{ item }}"
+  with_items:
+    - /etc/cerebro
+    - /var/lib/cerebro
+    - /opt/cerebro/logs
+  notify: restart cerebro
+  tags: cerebro
+
+- name: cerebro configs
+  template:
+    src: etc/cerebro/{{ item }}.j2
+    dest: /etc/cerebro/{{ item }}
+    owner: cerebro
+    mode: 0400
+  with_items:
+    - cerebro.conf
+    - logback.xml
+  notify: restart cerebro
+  tags: cerebro
+
+- name: cerebro default
+  template:
+    src: etc/default/cerebro.j2
+    dest: /etc/default/cerebro
+    owner: root
+    group: root
+    mode: 0400
+  notify: restart cerebro
+  tags: cerebro
+
+- name: cerebro service
+  copy:
+    src: etc/systemd/system/cerebro.service
+    dest: /etc/systemd/system/cerebro.service
+    owner: root
+    group: root
+    mode: 0600
+  notify: restart cerebro
+  register: cerebro_service
+  tags: cerebro
+
+- name: ensure cerebro is started
+  service:
+    name: cerebro
+    state: started
+    enabled: yes
+    daemon_reload: "{{ cerebro_service.changed|ternary('yes', 'no') }}"
+  tags: cerebro
+
+- name: flush before test
+  meta: flush_handlers
+  tags: cerebro
+
+- name: wait for cerebro http
+  wait_for:
+    host: "{{ ansible_facts[cerebro_iface].ipv4.address }}"
+    port: 9000
+    timeout: 60
+  tags: cerebro
+
+- name: cerebro http home
+  uri:
+    url: http://{{ ansible_facts[cerebro_iface].ipv4.address }}:9000
+    status_code: 200
+    remote_src: true
+  changed_when: no
+  register: cerebro_home
+  retries: 3
+  until: cerebro_home.status == 200
+  when: not ansible_check_mode
+  tags: cerebro
+
+- include_tasks: ../../nginx-acme/tasks/nginx-acme.yml
+  vars:
+    ssl_path: "{{ cerebro_ssl_cert }}"
+  when: cerebro_ssl_cert is defined
+
+- include_tasks: nginx-cerebro.yml
+  when: cerebro_domain is defined
+
+- name: disable cerebro
+  service:
+    name: cerebro
+    state: stopped
+    enabled: no
+    daemon_reload: "{{ cerebro_service.changed|ternary('yes', 'no') }}"
+  tags: cerebro
+  when: not cerebro_enabled

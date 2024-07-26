@@ -1,0 +1,20 @@
+---
+
+elasticsearch_version: 7.17.15
+elasticsearch_cluster_name: elastic
+elasticsearch_iface: lo
+elasticsearch_memory: 1g
+elasticsearch_oss: true
+elasticsearch_auth: true
+elasticsearch_bind_all: true
+elasticsearch_private_iface: lo
+elasticsearch_private_health: true
+elasticsearch_index_access_index: []
+elasticsearch_replicas: 1
+elasticsearch_aliases: []
+elasticsearch_indexes: []
+elasticsearch_restart_on_upgrade: true
+
+cerebro_iface: lo
+cerebro_version: 0.9.4
+cerebro_enabled: false

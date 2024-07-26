@@ -1,0 +1,166 @@
+---
+
+- assert:
+    that:
+      - ansible_distribution_major_version in ["9", "10", "11", "12"]
+
+- name: Elastic key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Logstash Major Ver
+  set_fact:
+    logstash_major_version: "{{ logstash_version.split('.')[:1][0] }}"
+
+- name: Elastic repo
+  apt_repository:
+    repo: deb https://artifacts.elastic.co/packages/{% if logstash_oss %}oss-{% endif %}{{ logstash_major_version }}.x/apt stable main
+    state: present
+    filename: elastic
+
+- name: packages
+  apt:
+    update_cache: yes
+    pkg:
+      - logstash{% if logstash_oss %}-oss{% endif %}=1:{{ logstash_version }}-1
+
+- name: config
+  template:
+    src: etc/logstash/{{ item }}.j2
+    dest: /etc/logstash/{{ item }}
+    mode: 0400
+    owner: logstash
+  with_items:
+    - logstash.yml
+    - jvm.options
+    - log4j2.properties
+  notify: restart logstash
+
+- name: default
+  template:
+    src: etc/default/logstash.j2
+    dest: /etc/default/logstash
+    mode: 0600
+    owner: root
+    group: root
+  notify: restart logstash
+
+- name: more systemd
+  file:
+    path: /etc/systemd/system/logstash.service.d/
+    state: directory
+    owner: root
+    mode: 0755
+
+- name: more service
+  copy:
+    src: etc/systemd/system/logstash.service.d/logstash.conf
+    dest: /etc/systemd/system/logstash.service.d/logstash.conf
+    owner: root
+    mode: 0644
+  register: _more_service
+
+- name: dummy pipeline
+  copy:
+    src: etc/logstash/conf.d/dummy.conf
+    dest: /etc/logstash/conf.d/dummy.conf
+    owner: logstash
+    mode: 0400
+  notify: restart logstash
+
+- block:
+  - name: wait for elasticsearch
+    wait_for:
+      host: "{{ hostvars[groups.elasticsearch.0].ansible_facts[elasticsearch_iface].ipv4.address }}"
+      port: 9200
+      timeout: 60
+
+  - name: es prefix
+    set_fact:
+      _es: http://{% if elasticsearch_auth %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{{ hostvars[groups.elasticsearch.0].ansible_facts[elasticsearch_iface].ipv4.address }}:9200
+
+  - name: es available
+    uri:
+      url: "{{ _es }}"
+      status_code: 200
+    changed_when: no
+    retries: 5
+    delay: 10
+
+  when: >
+    groups.get('elasticsearch', []) | length > 0
+
+- name: logstash-sample.conf is boring
+  file:
+    path: /etc/logstash/logstash-sample.conf
+    state: absent
+
+- name: ensure logstash is started
+  systemd:
+    name: logstash
+    state: started
+    enabled: yes
+    daemon_reload: "{{ _more_service.changed|ternary('yes', 'no') }}"
+
+- name: flush before test
+  meta: flush_handlers
+
+- name: wait for http
+  wait_for:
+    host: localhost
+    port: 9600
+    timeout: 60
+
+- name: http home
+  uri:
+    url: http://localhost:9600/
+    status_code: 200
+  changed_when: no
+  retries: 5
+  delay: 10
+  register: logstash_home
+  until: logstash_home.status == 200
+  check_mode: no
+
+- name: plugins
+  with_items: "{{ logstash_plugins }}"
+  command: >
+    /usr/share/logstash/bin/logstash-plugin install
+    {% if item.version is defined %} --version {{ item.version }}{% endif %}
+    {{ item.name }}
+
+- include_tasks:
+    file: elasticsearch.yml
+  when: >
+    not ansible_check_mode
+    and
+    groups.get('elasticsearch', []) | length > 0
+
+- name: telegraf stat
+  stat:
+    path: /usr/bin/telegraf
+  register: telegraf_stat
+
+- block:
+  - name: telegraf config
+    template:
+      src: etc/telegraf/telegraf.d/{{ item }}.conf.j2
+      dest: /etc/telegraf/telegraf.d/{{ item }}.conf
+      mode: 0400
+      owner: telegraf
+    with_items:
+      - logstash
+      - logstash_statsd
+    notify: reload telegraf
+
+  - name: validate telegraf
+    command: >
+      telegraf --test --config /etc/telegraf/telegraf.d/{{ item }}.conf
+    with_items:
+      - logstash
+      #- logstash_statsd # The test is broken if logstash already run
+    changed_when: no
+    no_log: yes
+
+  when: telegraf_stat.stat.exists

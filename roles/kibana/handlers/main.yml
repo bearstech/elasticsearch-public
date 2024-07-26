@@ -1,0 +1,16 @@
+---
+
+- name: restart kibana
+  service:
+    name: kibana
+    state: restarted
+
+- name: reload nginx
+  service:
+    name: nginx
+    state: reloaded
+
+- name: reload telegraf
+  service:
+    name: telegraf
+    state: reloaded

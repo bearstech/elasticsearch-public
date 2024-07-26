@@ -1,0 +1,5 @@
+instances:
+{% for host in es_nodes %}
+  - name: '{{ hostvars[host].ansible_hostname }}'
+    dns: [ '{{ hostvars[host].ansible_hostname }}' ]
+{% endfor %}

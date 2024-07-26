@@ -1,0 +1,11 @@
+---
+
+logstash_version: 7.16.1
+logstash_oss: false
+logstash_memory: 1g
+logstash_plugins: []
+logstash_statsd_port: 8125
+logstash_rolling_strategy_max: 8
+
+elasticsearch_auth: true
+elasticsearch_iface: lo

@@ -1,0 +1,23 @@
+[[inputs.elasticsearch]]
+  servers = ["http://{% if elasticsearch_bind_all %}127.0.0.1{% else %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}{% endif %}:9200"]
+  timeout = "8s"
+{% if elasticsearch_auth %}
+  username = "remote_monitoring_user"
+  password = "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/remote_monitoring_user.passwd') }}"
+{% endif %}
+  
+  local = true
+  cluster_stats_only_from_master = true
+
+  cluster_health = true
+  cluster_health_level = "cluster"
+
+  cluster_stats = false
+
+  ## node_stats is a list of sub-stats that you want to have gathered. Valid options
+  ## are "indices", "os", "process", "jvm", "thread_pool", "fs", "transport", "http",
+  ## "breaker". Per default, all stats are gathered.
+  node_stats = ["jvm", "indices"]
+
+  fieldpass = ["search_query_total","search_query_time_in_millis","indexing_index_total","docs_count","store_size_in_bytes","status", "mem_heap_used_in_bytes", "mem_heap_max_in_bytes"]
+

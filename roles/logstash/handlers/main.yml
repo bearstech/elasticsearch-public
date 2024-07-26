@@ -1,0 +1,11 @@
+---
+
+- name: restart logstash
+  service:
+    name: logstash
+    state: restarted
+
+- name: reload telegraf
+  service:
+    name: telegraf
+    state: reloaded

@@ -1,0 +1,28 @@
+---
+
+#
+# Included in a loop
+#
+# item is
+#   index: string, index name
+#   value: stuff for defining the index
+#
+
+- name: index exists
+  uri:
+    url: http://{% if elasticsearch_auth %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}:9200/{{ item.index }}/
+    method: HEAD
+    remote_src: true
+    status_code:
+      - 200
+      - 404
+  register: index_already_exists
+
+- name: create index
+  uri:
+    url: http://{% if elasticsearch_auth %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}:9200/{{ item.index }}/
+    remote_src: true
+    method: PUT
+    body_format: json
+    body: "{{ item.value }}"
+  when: index_already_exists.status != 200

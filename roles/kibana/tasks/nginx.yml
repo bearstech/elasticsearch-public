@@ -1,0 +1,58 @@
+---
+
+- name: assert
+  tags: lint
+  assert:
+    that:
+      - kibana_domain is defined
+
+- name: packages
+  apt:
+    update_cache: yes
+    pkg:
+      - python3-passlib
+      - nginx-light
+
+- name: log folder
+  file:
+    state: directory
+    path: /var/log/nginx/{{ kibana_domain }}
+    owner: www-data
+    group: adm
+    mode: 0750
+
+- name: htpasswd
+  when: kibana_htpasswd is defined
+  htpasswd:
+    owner: root
+    group: www-data
+    password: "{{ kibana_htpasswd }}"
+    name: admin
+    path: /etc/nginx/kibana_htpasswd
+    mode: 0640
+
+- include_tasks: ../../nginx-acme/tasks/nginx-acme.yml
+  vars:
+    ssl_path: "{{ kibana_ssl_cert }}"
+
+- name: nginx vhost available
+  template:
+    src: etc/nginx/sites-available/kibana.conf.j2
+    dest: /etc/nginx/sites-available/{{ kibana_domain }}.conf
+    owner: root
+    mode: 0440
+  notify: reload nginx
+
+- name: nginx vhost enabled
+  file:
+    state: link
+    src: /etc/nginx/sites-available/{{ kibana_domain }}.conf
+    dest: /etc/nginx/sites-enabled/{{ kibana_domain }}.conf
+    owner: root
+    mode: 0440
+  notify: reload nginx
+
+- name: ensure nginx is started
+  service:
+    name: nginx
+    state: started

@@ -1,0 +1,244 @@
+---
+
+- name: lint
+  tags: lint
+  assert:
+    that:
+      - >
+        (not elasticsearch_auth)
+        or (
+          kibana_encryptionkey is defined
+          and
+          (kibana_encryptionkey | length) >= 32
+        )
+
+- name: Elastic key
+  tags:
+    - package
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Kibana Major Ver
+  set_fact:
+    kibana_major_version: "{{ kibana_version.split('.')[:1][0] }}"
+
+- name: Elastic repo
+  tags:
+    - package
+  apt_repository:
+    repo: deb https://artifacts.elastic.co/packages/{% if kibana_oss %}oss-{% endif %}{{ kibana_major_version }}.x/apt stable main
+    state: present
+    filename: elastic{% if kibana_oss %}_oss{% endif %}
+
+- name: name
+  tags:
+    - package
+  set_fact:
+    kibana_name: kibana{% if kibana_oss %}-oss{% endif %}
+  check_mode: no
+
+- name: packages
+  tags:
+    - package
+  apt:
+    update_cache: yes
+    pkg:
+      - "{{ kibana_name }}={{ kibana_version }}"
+
+- name: Elastic users
+  uri:
+    url: http://{% if elasticsearch_auth %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}:9200/_security/user
+    status_code: 200
+  when: elasticsearch_auth
+
+- name: Elastic roles
+  uri:
+    url: http://{% if elasticsearch_auth %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}:9200/_security/role
+    status_code: 200
+  when: elasticsearch_auth
+
+- name: config
+  template:
+    src: etc/kibana/kibana.yml.j2
+    dest: /etc/kibana/kibana.yml
+    mode: 0400
+    owner: kibana
+  notify: restart kibana
+
+- name: ensure kibana is started
+  tags:
+    - package
+  service:
+    name: kibana
+    state: started
+    enabled: yes
+
+- include_tasks:
+    file: nginx.yml
+  when: kibana_with_nginx | bool
+
+- name: flush before test
+  meta: flush_handlers
+
+- name: wait for http
+  wait_for:
+    host: "{{ ansible_facts[kibana_iface].ipv4.address }}"
+    port: 5601
+    timeout: 60
+
+- name: http home
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/status
+    status_code:
+      - 200
+      - 401
+  changed_when: no
+  retries: 10
+  delay: 10
+  register: kibana_home
+  until: ansible_check_mode or kibana_home.status in [200, 401]
+
+- name : Create my_kibana_admin role
+  when: not kibana_oss
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/security/role/my_kibana_admin
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+    method: PUT
+    headers:
+      'kbn-xsrf': kibana
+    status_code: 204
+    body_format: json
+    body:
+      elasticsearch:
+        cluster: []
+        indices:
+          - names: ["*"]
+            privileges: ["all"]
+            allow_restricted_indices: "false"
+        run_as: []
+      kibana:
+        - base:
+              - "all"
+          spaces:
+            - "*"
+
+- include_tasks:
+    file: user.yml
+  with_items:
+    - name: admin
+      password: "{{ lookup('password', 'credentials/' + elasticsearch_cluster_name + '/admin.passwd') }}"
+      email: "{{ kibana_email }}"
+      roles:
+        - kibana_user
+        - kibana_system
+        - my_kibana_admin
+        - superuser
+  when: elasticsearch_auth
+
+- name: Get Kibana's roles
+  when: not kibana_oss
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/security/role
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+  register: _kibana_roles
+
+- name: Get kibana's spaces
+  when: not kibana_oss
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/spaces/space
+    user: admin
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/admin.passwd') }}"
+    force_basic_auth: yes
+
+- name: Set roles
+  with_items: "{{ kibana_spaces }}"
+  when: elasticsearch_auth and not kibana_oss
+  uri:
+    url: http://{{ ansible_facts[elasticsearch_iface].ipv4.address }}:9200/_security/role/my_{{ item.id }}_ro_role
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+    method: POST
+    body_format: json
+    body:
+      cluster: []
+      indices:
+        - names:
+            - logstash-{{ item.id }}-*
+          privileges:
+            - read
+
+- name: Get roles
+  with_items: "{{ kibana_spaces }}"
+  when: elasticsearch_auth and not kibana_oss
+  uri:
+    url: http://{{ ansible_facts[elasticsearch_iface].ipv4.address }}:9200/_security/role/my_{{ item.id }}_ro_role
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+
+- set_fact:
+    _users: >
+      {{ _users|default([]) + [ dict(
+      name=item.id,
+      email=item.email,
+      roles=['my_' + item.id + '_ro_role'],
+      password=lookup('password',
+        'credentials/' + elasticsearch_cluster_name + '/ro_user_' + item.id + '.passwd')
+      ) ] }}
+  with_items: "{{ kibana_spaces }}"
+  when: elasticsearch_auth
+
+- include_tasks: user.yml
+  with_items: "{{ _users }}"
+  when: kibana_spaces | length > 0
+
+- name: kibana home
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/
+  register: _kibana_home
+
+- include_tasks: spaces.yml
+  when: not kibana_oss
+
+- name: create /etc/kibana/dashboards/
+  file:
+    path:  /etc/kibana/dashboards/
+    state: directory
+    mode: 0750
+    owner: kibana
+
+- include_tasks: dashboard.yml
+  with_items: "{{ kibana_spaces }}"
+  loop_control:
+    loop_var: item
+  when: >
+    (item.dashboard is defined)
+    and ( item.dashboard|length > 0)
+    and not kibana_oss
+
+- name: telegraf stat
+  stat:
+    path: /usr/bin/telegraf
+  register: telegraf_stat
+
+- block:
+  - name: telegraf config
+    template:
+      src: etc/telegraf/telegraf.d/kibana.conf.j2
+      dest: /etc/telegraf/telegraf.d/kibana.conf
+      owner: telegraf
+      mode: 0400
+    notify: reload telegraf
+
+  - name: validate telegraf config
+    command: >
+      telegraf --test --config /etc/telegraf/telegraf.d/kibana.conf
+    changed_when: no
+
+  when: telegraf_stat.stat.exists

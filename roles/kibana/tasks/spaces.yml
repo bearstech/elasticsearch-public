@@ -1,0 +1,139 @@
+---
+
+- name: Curated spaces
+  set_fact:
+    _spaces: >
+      {{ _spaces|default([]) + [{
+        'id': item.id,
+        'name': item.name,
+        'description': item.description,
+        'color': item.color,
+        'initials': item.initials
+        }] }}
+  with_items: "{{ kibana_spaces }}"
+
+- name: All spaces
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/spaces/space
+    user: admin
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/admin.passwd') }}"
+    force_basic_auth: yes
+  register: _all_spaces
+
+- set_fact:
+    _all_spaces: "{{ _all_spaces.json|map(attribute='id')|list }}"
+  when: not ansible_check_mode
+
+- name: Set kibana's spaces
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/spaces/space{% if item.id in _all_spaces %}/{{ item.id }}{% endif %}
+    user: admin
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/admin.passwd') }}"
+    force_basic_auth: yes
+    method: "{% if item.id in _all_spaces %}PUT{% else %}POST{% endif %}"
+    body_format: json
+    headers:
+      'kbn-xsrf': kibana
+    body: "{{ item }}"
+  with_items: "{{ _spaces }}"
+  when: >
+    kibana_spaces is defined
+    and not ansible_check_mode
+    and kibana_spaces | length > 0
+
+#
+# {
+# "metadata":{},
+# "elasticsearch":{
+#   "cluster":[],
+#   "indices":[
+#     {"names":["logstash-marketing-*"],
+#     "privileges":["read"],
+#     "allow_restricted_indices":false}
+#     ],
+#   "run_as":[]},
+# "kibana":[
+#   {"base":[],
+#   "feature":{
+#     "discover":["read"],
+#     "dashboard":["read"]
+#     },
+#   "spaces":["marketing"]
+#     }
+#   ]
+# }
+# See https://www.elastic.co/guide/en/kibana/current/role-management-api-put.html
+#
+- name: set space role
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/api/security/role/my_{{ item.id }}_ro_role
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+    method: PUT
+    headers:
+      'kbn-xsrf': kibana
+    status_code: 204
+    body_format: json
+    body:
+      elasticsearch:
+        cluster: []
+        indices:
+          - names: ["logstash-{{ item.id }}-*"]
+            privileges: ["read"]
+            allow_restricted_indices: "false"
+        run_as: []
+      kibana:
+        - base: []
+          feature:
+            discover:
+              - read
+            dashboard:
+              - read
+          spaces:
+            - "{{ item.id }}"
+  with_items: "{{ _spaces }}"
+  when: _spaces is defined
+
+- name: get settings
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/s/{{ item.id }}/api/kibana/settings
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+  with_items: "{{ _spaces }}"
+  when: _spaces is defined
+#
+# See https://discuss.elastic.co/t/kibana-7-x-dark-mode/183428
+#
+- name: set dark mode
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/s/{{ item.id }}/api/kibana/settings/theme:darkMode
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+    method: POST
+    headers:
+      'kbn-xsrf': kibana
+    status_code: 200
+    body_format: json
+    body:
+      value: true
+  with_items: "{{ _spaces }}"
+  when: _spaces is defined
+
+- name: set dow
+  uri:
+    url: http://{{ ansible_facts[kibana_iface].ipv4.address }}:5601/s/{{ item.id }}/api/kibana/settings/dateFormat:dow
+    user: elastic
+    password: "{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}"
+    force_basic_auth: yes
+    method: POST
+    headers:
+      'kbn-xsrf': kibana
+    status_code: 200
+    body_format: json
+    body:
+      value: Monday
+  with_items: "{{ _spaces }}"
+  when: _spaces is defined

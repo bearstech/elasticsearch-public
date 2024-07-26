@@ -1,0 +1,236 @@
+---
+
+- assert:
+    that:
+      - ansible_distribution_major_version in ["9", "10", "11", "12"]
+
+- name: GPG Install
+  apt:
+    update_cache: yes
+    pkg:
+     - gpg
+     - gpg-agent
+
+- name: Elastic key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Elastic Major Ver
+  set_fact:
+    elasticsearch_major_version: "{{ elasticsearch_version.split('.')[:1][0] }}"
+
+- name: Elastic repo
+  apt_repository:
+    repo: deb https://artifacts.elastic.co/packages/{% if elasticsearch_oss | bool %}oss-{% endif %}{{ elasticsearch_major_version }}.x/apt stable main
+    state: present
+    filename: elastic{% if elasticsearch_oss |  bool %}_oss{% endif %}
+
+- name: packages
+  apt:
+    update_cache: yes
+    pkg:
+      - openjdk-{%if ansible_distribution_major_version == "9" %}8{%elif ansible_distribution_major_version == "12" %}17{% else %}11{% endif %}-jre-headless
+      - elasticsearch{% if elasticsearch_oss | bool %}-oss{% endif %}={{ elasticsearch_version }}
+      - python3-venv
+      - python3-setuptools
+      - python3-pip
+      - python3-pexpect
+  tags: curator
+
+- name: curator venv
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  pip:
+    virtualenv_command: python3.{%if ansible_distribution_major_version == "9" %}5{% elif ansible_distribution_major_version == "10" %}7{% elif ansible_distribution_major_version == "11" %}9{% elif ansible_distribution_major_version == "12" %}11{% endif %} -m venv
+    virtualenv: /opt/curator
+    name: elasticsearch-curator
+  tags: curator
+
+- name: curator symlink
+  file:
+    state: link
+    src: /opt/curator/bin/curator
+    dest: /usr/local/bin/curator
+  tags: curator
+
+- name: log4j config
+  copy:
+    src: etc/elasticsearch/log4j2.properties
+    dest: /etc/elasticsearch/log4j2.properties
+    owner: root
+    group: elasticsearch
+    mode: 0640
+
+- name: some configs
+  template:
+    src: etc/elasticsearch/{{ item }}.j2
+    dest: /etc/elasticsearch/{{ item }}
+    mode: 0640
+    owner: root
+    group: elasticsearch
+  with_items:
+    - jvm.options
+  notify: restart elasticsearch
+
+- name: ulimit
+  lineinfile:
+    path: /etc/security/limits.conf
+    regexp: "^elasticsearch "
+    line: "elasticsearch  -  nofile  65535"
+  notify: restart elasticsearch
+
+- name: restart elasticsearch
+  service:
+    name: elasticsearch
+    state: stopped
+    enabled: yes
+
+- name: transport cert exist
+  delegate_to: localhost
+  stat:
+    path: 'credentials/{{ elasticsearch_cluster_name }}/certs.zip'
+  register: es_transport_cert_exist
+  check_mode: no
+
+- name: refresh transport cert
+  include_tasks: transport_cert.yml
+
+- name: passwords exist
+  delegate_to: localhost
+  stat:
+    path: 'credentials/{{ elasticsearch_cluster_name }}/elastic.passwd'
+  register: es_passwords_exist
+  check_mode: no
+
+- name: config
+  vars:
+    es_nodes: "{{ play_hosts }}"
+  template:
+    src: etc/elasticsearch/elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    mode: 0640
+    owner: root
+    group: elasticsearch
+  notify: restart elasticsearch
+
+- name: restart on upgrade
+  lineinfile:
+    owner: root
+    group: elasticsearch
+    mode: 0640
+    path: /etc/default/elasticsearch
+    regexp: '^(#|\s)*RESTART_ON_UPGRADE=.*?'
+    line: >
+      RESTART_ON_UPGRADE={{ elasticsearch_restart_on_upgrade |
+                            ternary('true', 'false')  }}
+  notify: restart elasticsearch
+
+- name: ensure elasticsearch is started
+  service:
+    name: elasticsearch
+    state: started
+    enabled: yes
+
+- name: create password files for es8
+  include_tasks: fresh_passwords_8.yml
+  when: elasticsearch_major_version | int > 7 and not es_passwords_exist.stat.exists and inventory_hostname == play_hosts | first
+
+- name: create password files (for es6 or es7)
+  include_tasks: fresh_passwords.yml
+  when: elasticsearch_major_version | int < 8 and not es_passwords_exist.stat.exists and inventory_hostname == play_hosts | first
+
+# cerebro doesnt work on Debian 12 / openjdk17
+# see https://github.com/lmenezes/cerebro/issues/542
+- include_tasks:
+    file: cerebro.yml
+  tags: cerebro
+  when: ansible_distribution_major_version in ["9", "10", "11"]
+
+- name: flush before test
+  meta: flush_handlers
+
+- name: Sleep for 15 seconds
+  wait_for:
+    timeout: 15
+
+- name: http home
+  uri:
+    url: http://{% if elasticsearch_auth %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{% if elasticsearch_bind_all %}127.0.0.1{% else %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}{% endif %}:9200/_cluster/health?pretty
+    status_code:
+     - 200
+     - 401
+    remote_src: true
+  changed_when: no
+  register: elasticsearch_home
+  retries: 5
+  until: elasticsearch_home.status in [200, 401]
+  when: not ansible_check_mode
+
+- name: debug home
+  debug:
+    msg:  "{{ elasticsearch_home.status }}"
+
+- name: force passwords
+  include_tasks: force_passwords_{{ elasticsearch_major_version }}.yml
+  when: not ansible_check_mode and elasticsearch_home.status == 401
+
+- name: cat indices
+  uri:
+    url: http://{% if elasticsearch_auth is defined %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{% if elasticsearch_bind_all %}127.0.0.1{% else %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}{% endif %}:9200/_cat/indices
+    status_code: 200
+    remote_src: true
+    return_content: yes
+  register: cat_indices
+  check_mode: no
+
+- name: sets number of replicas
+  when: cat_indices.content | length != 0
+  uri:
+    url: http://{% if elasticsearch_auth is defined %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{% if elasticsearch_bind_all %}127.0.0.1{% else %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}{% endif %}:9200/_all/_settings?preserve_existing=true
+    method: PUT
+    remote_src: true
+    body_format: json
+    status_code: 200
+    body: >
+      {
+        "index.number_of_replicas" : "{% if groups.elasticsearch | length == 1 %}0{% else %}{{ elasticsearch_replicas }}{% endif %}"
+      }
+
+- name: users
+  when: >
+    elasticsearch_version.split('.')[:2] | join('.') | float < 7.8
+    and elasticsearch_auth
+    and not elasticsearch_oss
+  uri:
+    url: http://{% if elasticsearch_auth is defined %}elastic:{{ lookup('file', 'credentials/' + elasticsearch_cluster_name + '/elastic.passwd') }}@{% endif %}{% if elasticsearch_bind_all %}127.0.0.1{% else %}{{ ansible_facts[elasticsearch_iface].ipv4.address }}{% endif %}:9200/_security/user
+    remote_src: true
+    status_code: 200
+
+- include_tasks: index.yml
+  with_items: "{{ elasticsearch_indexes }}"
+
+- name: telegraf stat
+  stat:
+    path: /usr/bin/telegraf
+  register: telegraf_stat
+
+- block:
+  - name: telegraf conf
+    template:
+      src: etc/telegraf/telegraf.d/infra-elasticsearch.conf.j2
+      dest: /etc/telegraf/telegraf.d/infra-elasticsearch.conf
+      mode: 0400
+      owner: telegraf
+    notify: reload telegraf
+
+  - name: validate telegraf conf
+    command: >
+      telegraf --test --config /etc/telegraf/telegraf.d/infra-elasticsearch.conf
+    changed_when: no
+    no_log: yes
+
+  when: telegraf_stat.stat.exists
+
+- include_tasks: nginx-es.yml
+  when: elasticsearch_domain is defined

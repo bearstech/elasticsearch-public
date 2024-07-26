@@ -1,0 +1,47 @@
+---
+
+- name: assert
+  tags: lint
+  assert:
+    that:
+      - elasticsearch_domain is defined
+
+- name: packages
+  apt:
+    update_cache: yes
+    pkg:
+      - nginx-light
+
+- name: log folder
+  file:
+    state: directory
+    path: /var/log/nginx/{{ elasticsearch_domain }}
+    owner: www-data
+    group: adm
+    mode: 0750
+
+- include_tasks: ../../nginx-acme/tasks/nginx-acme.yml
+  vars:
+    ssl_path: "{{ elasticsearch_ssl_cert }}"
+
+- name: nginx vhost available
+  template:
+    src: etc/nginx/sites-available/elasticsearch.conf.j2
+    dest: /etc/nginx/sites-available/{{ elasticsearch_domain }}.conf
+    owner: root
+    mode: 0440
+  notify: reload nginx
+
+- name: nginx vhost enabled
+  file:
+    state: link
+    src: /etc/nginx/sites-available/{{ elasticsearch_domain }}.conf
+    dest: /etc/nginx/sites-enabled/{{ elasticsearch_domain }}.conf
+    owner: root
+    mode: 0440
+  notify: reload nginx
+
+- name: ensure nginx is started
+  service:
+    name: nginx
+    state: started

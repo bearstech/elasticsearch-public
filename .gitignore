@@ -1,0 +1,4 @@
+.vagrant/
+credentials/
+inventories/
+site.retry

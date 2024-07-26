@@ -1,0 +1,51 @@
+---
+
+- name: create certs directory
+  file:
+    path: "/etc/elasticsearch/certs"
+    state: directory
+    owner: root
+    group: elasticsearch
+    mode: 0750
+
+- name: transport cert exist
+  delegate_to: localhost
+  stat:
+    path: 'credentials/{{ elasticsearch_cluster_name }}/certs.zip'
+  register: es_transport_cert_exist
+  check_mode: no
+
+- name: create instance yml
+  vars:
+    es_nodes: "{{ play_hosts }}"
+  template:
+    src: etc/elasticsearch/instances.yml.j2
+    dest: /tmp/instances.yml
+    mode: 0600
+    owner: elasticsearch
+  when: not es_transport_cert_exist.stat.exists and inventory_hostname == play_hosts | first
+
+- name: create transport cert for elasticsearch_major_version 6 and 7
+  command: /usr/share/elasticsearch/bin/elasticsearch-certutil cert --days 10950 -keep-ca-key -pem -in /tmp/instances.yml -out /etc/elasticsearch/certs/certs.zip
+  when: elasticsearch_major_version | int < 8 and not es_transport_cert_exist.stat.exists and inventory_hostname == play_hosts | first
+
+- name: create transport cert for elasticsearch_major_version 8
+  command: /usr/share/elasticsearch/bin/elasticsearch-certutil cert --days 10950 --self-signed -pem -in /tmp/instances.yml -out /etc/elasticsearch/certs/certs.zip
+  when: elasticsearch_major_version | int == 8 and not es_transport_cert_exist.stat.exists and inventory_hostname == play_hosts | first
+
+- name: fetch the file from the master
+  fetch: src=/etc/elasticsearch/certs/certs.zip dest=credentials/{{ elasticsearch_cluster_name }}/ flat=yes
+  when: not es_transport_cert_exist.stat.exists and inventory_hostname == play_hosts | first
+
+- name: transport cert exist
+  delegate_to: localhost
+  stat:
+    path: 'credentials/{{ elasticsearch_cluster_name }}/certs.zip'
+  register: es_transport_cert_exist
+  check_mode: no
+
+- name: unzip cert
+  ansible.builtin.unarchive:
+    src: credentials/{{ elasticsearch_cluster_name }}/certs.zip
+    dest: /etc/elasticsearch/certs/
+  when: es_transport_cert_exist.stat.exists

@@ -1,0 +1,54 @@
+---
+
+- name: assert
+  tags: lint
+  assert:
+    that:
+      - cerebro_domain is defined
+
+- name: packages
+  apt:
+    update_cache: yes
+    pkg:
+      - python3-passlib
+      - nginx-light
+
+- name: log folder
+  file:
+    state: directory
+    path: /var/log/nginx/{{ cerebro_domain }}
+    owner: www-data
+    group: adm
+    mode: 0750
+
+- name: htpasswd
+  when: cerebro_htpasswd is defined
+  htpasswd:
+    owner: root
+    group: www-data
+    password: "{{ cerebro_htpasswd }}"
+    name: cerebro
+    path: /etc/nginx/cerebro_htpasswd
+    mode: 0640
+
+- name: nginx vhost available
+  template:
+    src: etc/nginx/sites-available/cerebro.conf.j2
+    dest: /etc/nginx/sites-available/{{ cerebro_domain }}.conf
+    owner: root
+    mode: 0440
+  notify: reload nginx
+
+- name: nginx vhost enabled
+  file:
+    state: link
+    src: /etc/nginx/sites-available/{{ cerebro_domain }}.conf
+    dest: /etc/nginx/sites-enabled/{{ cerebro_domain }}.conf
+    owner: root
+    mode: 0440
+  notify: reload nginx
+
+- name: ensure nginx is started
+  service:
+    name: nginx
+    state: started
